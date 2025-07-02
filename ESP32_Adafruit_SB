@@ -1,1 +1,151 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_BMP085.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFiManager.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+
+// BMP180 sensor
+Adafruit_BMP085 bmp;
+
+// OLED Display
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// WiFiManager Parameters
+char aio_username[50] = "";
+char aio_key[50] = "";
+char temp_topic[100];
+char pressure_topic[100];
+
+// MQTT Client
+WiFiClient client;
+Adafruit_MQTT_Client* mqtt;
+Adafruit_MQTT_Publish* Temperature;
+Adafruit_MQTT_Publish* Pressure;
+
+float temp, pressure;
+
+void connectToMQTT() {
+  Serial.print(F("Connecting to Adafruit IO... "));
+  int8_t ret;
+  while ((ret = mqtt->connect()) != 0) {
+    switch (ret) {
+      case 1: Serial.println(F("Wrong protocol")); break;
+      case 2: Serial.println(F("ID rejected")); break;
+      case 3: Serial.println(F("Server unavailable")); break;
+      case 4: Serial.println(F("Bad user/pass")); break;
+      case 5: Serial.println(F("Not authorized")); break;
+      default: Serial.println(F("Connection failed")); break;
+    }
+
+    if (ret >= 0) mqtt->disconnect();
+    Serial.println(F("Retrying in 10 seconds..."));
+    delay(10000);
+  }
+  Serial.println(F("Adafruit IO Connected!"));
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(23, 22);  // ESP32 custom I2C pins
+
+  // Initialize OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED not found");
+    while (1);
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Booting BMP180...");
+  display.println("1. Connect to BMP180_Config");
+  display.println("2. Enter WiFi & AIO creds");
+  display.println("3. Save & Exit");
+  display.display();
+
+  // Initialize BMP180
+  if (!bmp.begin()) {
+    Serial.println("BMP180 not found!");
+    display.setCursor(0, 40);
+    display.println("Sensor Error!");
+    display.display();
+    while (1);
+  }
+
+  // WiFiManager Portal
+  WiFiManager wm;
+  WiFiManagerParameter custom_user("aio_user", "Adafruit IO Username", aio_username, 50);
+  WiFiManagerParameter custom_key("aio_key", "Adafruit IO Key", aio_key, 50);
+
+  wm.addParameter(&custom_user);
+  wm.addParameter(&custom_key);
+  wm.setConfigPortalTimeout(180);
+  wm.startConfigPortal("BMP180_Config");
+
+  // Copy credentials
+  strcpy(aio_username, custom_user.getValue());
+  strcpy(aio_key, custom_key.getValue());
+
+  Serial.println("WiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // MQTT Setup
+  sprintf(temp_topic, "%s/feeds/BMP_Temperature", aio_username);
+  sprintf(pressure_topic, "%s/feeds/BMP_Pressure", aio_username);
+
+  mqtt = new Adafruit_MQTT_Client(&client, "io.adafruit.com", 1883, aio_username, aio_key);
+  Temperature = new Adafruit_MQTT_Publish(mqtt, temp_topic);
+  Pressure = new Adafruit_MQTT_Publish(mqtt, pressure_topic);
+
+  connectToMQTT();
+}
+
+void loop() {
+  if (!mqtt->ping(3)) {
+    if (!mqtt->connected()) connectToMQTT();
+  }
+
+  temp = bmp.readTemperature();
+  pressure = bmp.readPressure() / 100.0F;
+
+  Serial.printf("Temp: %.2f C\n", temp);
+  Serial.printf("Pres: %.2f hPa\n", pressure);
+
+  if (!Temperature->publish(temp)) {
+    Serial.println(" Temp publish failed");
+  }
+  if (!Pressure->publish(pressure)) {
+    Serial.println("Pressure publish failed");
+  } else {
+    Serial.println("Data published");
+  }
+
+  // Display
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(6, 7);
+  display.print("BMP180");
+
+  display.setCursor(5, 20);
+  display.print("Temp: ");
+  display.print(temp);
+  display.print((char)247);  // Degree symbol
+  display.print("C");
+
+  display.setCursor(5, 40);
+  display.print("Pres: ");
+  display.print(pressure);
+  display.print(" hPa");
+  display.display();
+
+  delay(5000);  // 5 second interval
+}
 
